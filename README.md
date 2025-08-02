@@ -14,11 +14,14 @@ registration crashes.
 
 ## Requirements
 
-1. A fixed amount of `n` passes are to be assigned to a number `m` of users, where `n < m`. `m-n` users will not get a pass.
+1. **Pass types**: There different types `t` of passes. Users register for a particular type of pass.
+1. For each `t`: A fixed amount of `n_t` passes are to be assigned to a number `m_t` of users:
+    1. If `n_t < m_t`, `m_t-n_t` users will not get a pass.
+    1. If `n_t >= m_t`, all `m_t` users will get a pass.
 1. **Stress free registration**: The time of registration does not change the chances of a user getting a pass.
-1. **Couples registration**: A pair of users can define a constraint; either both get a pass, or none get a pass.
+1. **Couples registration**: A pair of users can define a constraint; either both get a pass, or none get a pass. The passes the couple registers to can be of different type.
 1. **Fairness**: Passes are assigned fairly, where fair means:
-    1. Users who do not define any constraints have probability `1 / n` to get a pass.
+    1. Users who do not define any constraints have probability `n / m` to get a pass.
     1. Probability for a user to get a pass only depends on actions taken by that user.
     1. Two users with the same constraints have the same probability to get a pass.
 1. **Recycling of canceled passes**: After passes have been distributed to users: Should a user cancel their registration, that users pass can be recycled.
@@ -32,6 +35,6 @@ registration crashes.
 
 ### Backward algorithm
 
-The following algorithm chooses who does *not* get a pass (refusals).
-After at least `m-n` refusals have been found, the algorithm finishes.
+The following algorithm chooses who does *not* get a pass (refusals) for each type in round robin.
+After at least `m_t-n_t` refusals have been found, the algorithm finishes.
 

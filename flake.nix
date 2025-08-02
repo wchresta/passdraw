@@ -14,7 +14,7 @@
 
           src = ./.;
 
-          vendorHash = "";
+          vendorHash = "sha256-PYoO3JMlIbtF8sHm+pO2RQN6nJKIc001toGY7/b+t0I=";
         };
       in {
         packages = {
@@ -25,12 +25,14 @@
         devShell = pkgs.mkShell {
           inputsFrom = [ passdraw ];
           buildInputs = with pkgs; [
-            pkgs.go_1_22
+            pkgs.go_1_24
             pkgs.gotools
             pkgs.golangci-lint
             pkgs.gopls
             pkgs.go-outline
             pkgs.gopkgs
+
+            pkgs.cobra-cli
           ];
         };
       });
