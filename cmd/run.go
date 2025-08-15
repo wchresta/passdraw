@@ -4,17 +4,21 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wchresta/passdraw/pkg/input"
 	"github.com/wchresta/passdraw/pkg/runner"
 )
 
 type runCmd struct {
 	availStrings []string
+	inputPath    string
 }
 
 func init() {
@@ -35,59 +39,43 @@ func init() {
 	rootCmd.AddCommand(cobraCmd)
 
 	cobraCmd.Flags().StringSliceVar(&cmd.availStrings, "passes", nil, "Specify availability of passes for partition; format `partition:passes` e.g. `leaders:33`")
+	cobraCmd.Flags().StringVar(&cmd.inputPath, "input", "", "Path to take the input from. Must be in json format")
 }
 
 func (c *runCmd) Run(cmd *cobra.Command, args []string) {
-	availMap := make(map[runner.Partition]runner.Availability)
-	for _, availStr := range c.availStrings {
-		part, passStr, found := strings.Cut(availStr, ":")
-		if !found {
-			cmd.PrintErrln("--passes must have a `:`. Format `partition:passes`, e.g. `leaders:33`")
-			return
-		}
-		passes, err := strconv.Atoi(passStr)
+	var run *runner.Runner
+	var avail []runner.Availability
+
+	availMap, err := availMapFromAvailStrings(c.availStrings)
+	if err != nil {
+		cmd.PrintErr(err)
+		return
+	}
+	avail = slices.Collect(maps.Values(availMap))
+
+	if c.inputPath != "" {
+		inputBs, err := os.ReadFile(c.inputPath)
 		if err != nil {
-			cmd.PrintErrln("--passes must contain a valid number. Format `partition:passes`, e.g. `leaders:33`")
+			cmd.PrintErrf("cannot read input file %s: %s", c.inputPath, err)
 			return
 		}
-		availMap[runner.Partition(part)] = runner.Availability{
-			Partition: runner.Partition(part),
-			Available: passes,
+
+		conf, err := input.NewFromJSON(inputBs)
+		if err != nil {
+			cmd.PrintErrf("cannot parse input file %s: %s", c.inputPath, err)
+			return
+		}
+
+		run = conf.Runner()
+		if len(avail) == 0 {
+			avail = conf.Availabilities()
+			for _, a := range avail {
+				availMap[a.Partition] = a
+			}
 		}
 	}
 
-	leaderP := runner.Partition("leader")
-	followP := runner.Partition("follow")
-	r := runner.New([]*runner.User{
-		{Partition: leaderP, ID: "L1"},
-		{Partition: leaderP, ID: "L2"},
-		{Partition: leaderP, ID: "L3"},
-		{Partition: leaderP, ID: "L4"},
-		{Partition: leaderP, ID: "L5"},
-		{Partition: followP, ID: "F1"},
-		{Partition: followP, ID: "F2"},
-		{Partition: followP, ID: "F3"},
-		{Partition: followP, ID: "F4"},
-		{Partition: followP, ID: "F5"},
-		{Partition: leaderP, ID: "La->F1", Deps: []runner.UserID{"F1"}},
-		{Partition: leaderP, ID: "Lb->F2", Deps: []runner.UserID{"F2"}},
-		{Partition: leaderP, ID: "Lc->F3", Deps: []runner.UserID{"F3"}},
-		{Partition: followP, ID: "Fa->L3", Deps: []runner.UserID{"L3"}},
-		{Partition: followP, ID: "Fb->L4", Deps: []runner.UserID{"L4"}},
-		{Partition: followP, ID: "Fc->L5", Deps: []runner.UserID{"L5"}},
-		{Partition: leaderP, ID: "Lx->L1", Deps: []runner.UserID{"L1"}},
-		{Partition: leaderP, ID: "Ly->L2", Deps: []runner.UserID{"L2"}},
-		{Partition: followP, ID: "Fx->F2", Deps: []runner.UserID{"F2"}},
-		{Partition: followP, ID: "Fy->F3", Deps: []runner.UserID{"F3"}},
-		{Partition: leaderP, ID: "Lp->Fx", Deps: []runner.UserID{"Fx->F2"}},
-		{Partition: leaderP, ID: "Lq->Fy,F3", Deps: []runner.UserID{"Fy->F3", "F3"}},
-		{Partition: leaderP, ID: "LC1", Deps: []runner.UserID{"FC1"}},
-		{Partition: followP, ID: "FC1", Deps: []runner.UserID{"LC1"}},
-		{Partition: leaderP, ID: "LC2", Deps: []runner.UserID{"FC2"}},
-		{Partition: followP, ID: "FC2", Deps: []runner.UserID{"LC2"}},
-	})
-
-	solution, err := r.Run(slices.Collect(maps.Values(availMap)))
+	solution, err := run.Run(avail)
 	if err != nil {
 		cmd.PrintErrf("Run failed: %s", err)
 		return
@@ -96,10 +84,41 @@ func (c *runCmd) Run(cmd *cobra.Command, args []string) {
 	cmd.Println("Executed Run for the following availabilities:")
 	for partName, partPass := range solution.Passes {
 		a := availMap[partName]
+
 		cmd.Printf("%s - Handed out %d out of %d passes for partition:\n", partName, len(partPass), a.Available)
 		slices.Sort(partPass)
+
+		hasPass := make(map[runner.UserID]bool)
+		for _, u := range run.Users(partName) {
+			hasPass[u] = false
+		}
 		for _, pass := range partPass {
-			cmd.Println(" " + pass)
+			delete(hasPass, pass)
+			cmd.Println(" O " + pass)
+		}
+
+		cmd.Printf("%s - The following %d users did not get a pass:\n", partName, len(hasPass))
+		for u := range sortedKeys(hasPass) {
+			cmd.Println(" x " + u)
 		}
 	}
+}
+
+func availMapFromAvailStrings(availStrings []string) (map[runner.Partition]runner.Availability, error) {
+	availMap := make(map[runner.Partition]runner.Availability)
+	for _, availStr := range availStrings {
+		part, passStr, found := strings.Cut(availStr, ":")
+		if !found {
+			return nil, fmt.Errorf("--passes must have a `:`. Format `partition:passes`, e.g. `leaders:33`")
+		}
+		passes, err := strconv.Atoi(passStr)
+		if err != nil {
+			return nil, fmt.Errorf("--passes must contain a valid number. Format `partition:passes`, e.g. `leaders:33`")
+		}
+		availMap[runner.Partition(part)] = runner.Availability{
+			Partition: runner.Partition(part),
+			Available: passes,
+		}
+	}
+	return availMap, nil
 }

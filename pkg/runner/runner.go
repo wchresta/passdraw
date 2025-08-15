@@ -59,6 +59,10 @@ func NewWithRand(users []*User, rand *rand.Rand) *Runner {
 	}
 }
 
+func (r *Runner) Users(partition Partition) []UserID {
+	return slices.Clone(r.usersByPartition[partition])
+}
+
 func (r *Runner) User(id UserID) *User {
 	return r.userByID[id]
 }

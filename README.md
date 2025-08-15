@@ -2,6 +2,12 @@
 
 Passdraw is an algorithm for giving out event passes fairly.
 
+## Example
+
+```
+passdraw run --input ./testdata/medium_dance_event.json 
+```
+
 ## Problem statement
 
 Large events, like [dance events](https://swingtzerland.com), sell hundreds of
@@ -21,8 +27,8 @@ registration crashes.
 1. **Stress free registration**: The time of registration does not change the chances of a user getting a pass.
 1. **Couples registration**: A pair of users can define a constraint; either both get a pass, or none get a pass. The passes the couple registers to can be of different type.
 1. **Fairness**: Passes are assigned fairly, where fair means:
-    1. Users who do not define any constraints have probability `n / m` to get a pass.
-    1. Probability for a user to get a pass only depends on actions taken by that user.
+    1. Users who do not define any constraints have at least probability `n_t / m_t` to get a pass.
+    1. Probability for a user to get a pass is never lowered by other users adding dependencies.
     1. Two users with the same constraints have the same probability to get a pass.
 1. **Recycling of canceled passes**: After passes have been distributed to users: Should a user cancel their registration, that users pass can be recycled.
 
