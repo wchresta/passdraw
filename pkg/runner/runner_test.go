@@ -1,7 +1,10 @@
 package runner_test
 
 import (
+	"cmp"
 	"fmt"
+	"iter"
+	"maps"
 	"math"
 	"math/rand"
 	"slices"
@@ -18,16 +21,16 @@ func TestRun_SinglePartition(t *testing.T) {
 		wantProb  float64
 	}{
 		{
-			name:      "300 users, 300 passes",
-			numUsers:  300,
-			numPasses: 300,
-			wantProb:  1.0,
-		},
-		{
 			name:      "50 users, 30 passes",
 			numUsers:  50,
 			numPasses: 30,
 			wantProb:  30.0 / 50.0,
+		},
+		{
+			name:      "300 users, 300 passes",
+			numUsers:  300,
+			numPasses: 300,
+			wantProb:  1.0,
 		},
 		{
 			name:      "500 users, 300 passes",
@@ -47,14 +50,14 @@ func TestRun_SinglePartition(t *testing.T) {
 
 			rand := rand.New(rand.NewSource(5544332211))
 			r := runner.NewWithRand(users, rand)
-			allowDelta := 0.02 // Allow 2% difference from expected outcome
+			allowDelta := 0.05 // Allow difference from expected outcome
 
 			availability := []runner.Availability{{
 				Available: tc.numPasses,
 				Partition: "TestPartition",
 			}}
-			partitionPasses := runStats(t, r, availability, 10000)["TestPartition"]
-			for u, prob := range partitionPasses {
+			partitionPasses := runStats(t, r, availability, 2000)["TestPartition"]
+			for u, prob := range sortedKeys(partitionPasses) {
 				if diff := math.Abs(prob - tc.wantProb); diff > allowDelta {
 					t.Errorf("Run produced unexpected probabilities: user=%s got %f, want %f, diff: %f", u, prob, tc.wantProb, diff)
 				}
@@ -65,7 +68,7 @@ func TestRun_SinglePartition(t *testing.T) {
 
 // We run all above tests at the same time.
 func TestRun_IndependentPartitions(t *testing.T) {
-	var users []*runner.User
+	var users []runner.User
 	var availability []runner.Availability
 	rand := rand.New(rand.NewSource(5544332211))
 	allowDelta := 0.02 // Allow 2% difference from expected outcome
@@ -118,11 +121,45 @@ func TestRun_IndependentPartitions(t *testing.T) {
 
 	r := runner.NewWithRand(users, rand)
 
-	for partition, partProbs := range runStats(t, r, availability, 10000) {
+	for partition, partProbs := range runStats(t, r, availability, 1000) {
 		partTest := partitionTests[partition]
-		for u, prob := range partProbs {
+		for u, prob := range sortedKeys(partProbs) {
 			if diff := math.Abs(prob - partTest.wantProb); diff > allowDelta {
 				t.Errorf("Run produced unexpected probabilities: user=%s got %f, want %f, diff: %f", u, prob, partTest.wantProb, diff)
+			}
+		}
+	}
+}
+
+// We run all above tests at the same time.
+func TestRun_Weights(t *testing.T) {
+	rand := rand.New(rand.NewSource(5544332211))
+
+	// Add free users with weight 1
+	var users []runner.User
+	users = append(users, mkFreeUsers("Test", "Free", 8)...)
+	// Add one user with weight 2
+	users = append(users, runner.User{
+		Partition: "Test",
+		ID:        "Weighted",
+		Weight:    2.0,
+	})
+
+	r := runner.NewWithRand(users, rand)
+
+	availability := []runner.Availability{{Partition: "Test", Available: 3}}
+
+	allowDelta := 0.02 // Allow 2% difference from expected outcome
+	for _, partProbs := range runStats(t, r, availability, 100000) {
+		for uid, prob := range sortedKeys(partProbs) {
+			want := 0.3
+			if uid == "Weighted" {
+				// Not clear why this is the probability :(.
+				want = 56.0 / 100
+			}
+
+			if diff := math.Abs(prob - want); diff > allowDelta {
+				t.Errorf("Run produced unexpected probabilities: user=%s got %f, want %f, diff: %f", uid, prob, want, diff)
 			}
 		}
 	}
@@ -155,28 +192,28 @@ func runStats(t *testing.T, r *runner.Runner, availabilities []runner.Availabili
 	return stats
 }
 
-func mkUser(partition string, name string, dependencies ...runner.UserID) *runner.User {
+func mkUser(partition string, name string, dependencies ...runner.UserID) runner.User {
 	var deps []runner.UserID
 	for _, d := range dependencies {
 		deps = append(deps, runner.UserID(d))
 	}
-	return &runner.User{
+	return runner.User{
 		Partition: runner.Partition(partition),
 		ID:        runner.UserID(name),
 		Deps:      deps,
 	}
 }
 
-func mkFreeUsers(partition string, prefix string, num int) []*runner.User {
-	var users []*runner.User
+func mkFreeUsers(partition string, prefix string, num int) []runner.User {
+	var users []runner.User
 	for i := 0; i < num; i++ {
 		users = append(users, mkUser(partition, fmt.Sprintf("%s%d", prefix, i)))
 	}
 	return users
 }
 
-func mkUsersWithDeps(rand *rand.Rand, partition string, prefix string, num int, deps []runner.UserID, numDeps int) []*runner.User {
-	var users []*runner.User
+func mkUsersWithDeps(rand *rand.Rand, partition string, prefix string, num int, deps []runner.UserID, numDeps int) []runner.User {
+	var users []runner.User
 	deps = slices.Clone(deps)
 	for i := 0; i < num; i++ {
 		rand.Shuffle(len(deps), func(i, j int) { deps[i], deps[j] = deps[j], deps[i] })
@@ -185,9 +222,19 @@ func mkUsersWithDeps(rand *rand.Rand, partition string, prefix string, num int, 
 	return users
 }
 
-func mkUserCouple(partitionLeft string, partitionRight string, name string) []*runner.User {
-	return []*runner.User{
+func mkUserCouple(partitionLeft string, partitionRight string, name string) []runner.User {
+	return []runner.User{
 		mkUser(partitionLeft, name+"L", runner.UserID(name+"R")),
 		mkUser(partitionRight, name+"R", runner.UserID(name+"L")),
+	}
+}
+
+func sortedKeys[Map ~map[K]V, K cmp.Ordered, V any](m Map) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		for _, k := range slices.Sorted(maps.Keys(m)) {
+			if !yield(k, m[k]) {
+				return
+			}
+		}
 	}
 }

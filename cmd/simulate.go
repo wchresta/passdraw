@@ -42,7 +42,7 @@ func (c *simulateCmd) Simulate(cmd *cobra.Command, args []string) {
 
 	leaderP := runner.Partition("Leader")
 	followP := runner.Partition("Follow")
-	users := []*runner.User{
+	users := []runner.User{
 		{Partition: leaderP, ID: "L1"},
 		{Partition: leaderP, ID: "L2"},
 		{Partition: leaderP, ID: "L3"},

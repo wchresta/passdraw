@@ -11,6 +11,12 @@ import (
 type User struct {
 	ID   runner.UserID
 	Deps []runner.UserID `json:",omitempty"`
+
+	// Weight can change how likely it is for a user to get a pass.
+	// A number below 1 reduces changes to get a pass, number above 1 increase them.
+	// If 0; defaults to 1.
+	// Set to a number below 0 to guarantee a refusal.
+	Weight float64 `json:",omitempty"`
 }
 
 type RunConfig struct {
@@ -55,14 +61,15 @@ func (r *RunConfig) validate() error {
 }
 
 func (r *RunConfig) Runner() *runner.Runner {
-	var users []*runner.User
+	var users []runner.User
 	for part, partUsers := range r.Users {
 		partition := runner.Partition(part)
 		for _, u := range partUsers {
-			users = append(users, &runner.User{
+			users = append(users, runner.User{
 				Partition: partition,
 				ID:        u.ID,
 				Deps:      u.Deps,
+				Weight:    u.Weight,
 			})
 		}
 	}

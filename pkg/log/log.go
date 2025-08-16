@@ -10,5 +10,5 @@ func Warningln(a ...any) {
 }
 
 func Warningf(msg string, a ...any) {
-	fmt.Fprintf(os.Stderr, "[WARN] "+msg, a)
+	fmt.Fprintf(os.Stderr, "[WARN] "+msg, a...)
 }
