@@ -61,11 +61,11 @@ func (r *RunConfig) validate() error {
 }
 
 func (r *RunConfig) Runner() *runner.Runner {
-	var users []*runner.User
+	var users []runner.User
 	for part, partUsers := range r.Users {
 		partition := runner.Partition(part)
 		for _, u := range partUsers {
-			users = append(users, &runner.User{
+			users = append(users, runner.User{
 				Partition: partition,
 				ID:        u.ID,
 				Deps:      u.Deps,

@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"slices"
 	"strings"
@@ -32,76 +33,93 @@ type Availability struct {
 }
 
 type Runner struct {
-	userByID         map[UserID]*User
-	usersByPartition map[Partition][]UserID
-	dependees        map[UserID][]UserID
-	rand             *rand.Rand
+	// Managed by New
+	userByID map[UserID]User
+	rand     *rand.Rand
 
-	refusals map[Partition]map[UserID]bool
+	// Managed by reset/Run
+	usersInPartition map[Partition][]UserID
+	dependees        map[UserID][]UserID
+	candidates       map[Partition]map[UserID]bool
+	candidateWeights map[Partition]float64
 }
 
 type Solution struct {
 	Passes map[Partition][]UserID
 }
 
-func New(users []*User) *Runner {
+func New(users []User) *Runner {
 	return NewWithRand(users, rand.New(rand.NewSource(rand.Int63())))
 }
 
-func NewWithRand(users []*User, rand *rand.Rand) *Runner {
+func NewWithRand(users []User, rand *rand.Rand) *Runner {
 	if rand == nil {
 		panic("rand cannot be nil")
 	}
-	passUsers := make(map[Partition][]UserID)
-	userMap := make(map[UserID]*User)
+	userMap := make(map[UserID]User)
 	for _, u := range users {
+		// The interface exposes 2 = twice as probable to get a pass.
+		// However, internally, we work with refusals.
+		// So we need to set the weight to 1/2.
+		if u.Weight <= 0 {
+			u.Weight = 1
+		} else {
+			u.Weight = 1 / u.Weight
+		}
 		userMap[u.ID] = u
-		passUsers[u.Partition] = append(passUsers[u.Partition], u.ID)
 	}
+
 	return &Runner{
-		userByID:         userMap,
-		usersByPartition: passUsers,
-		rand:             rand,
+		userByID: userMap,
+		rand:     rand,
+	}
+}
+
+// reset resets the state to before any calculations.
+// This makes testing a lot easier.
+func (r *Runner) reset() {
+	r.usersInPartition = make(map[Partition][]UserID)
+	r.candidateWeights = make(map[Partition]float64)
+	r.dependees = make(map[UserID][]UserID)
+	r.candidates = make(map[Partition]map[UserID]bool)
+
+	for _, u := range r.userByID {
+		r.usersInPartition[u.Partition] = append(r.usersInPartition[u.Partition], u.ID)
+		r.candidateWeights[u.Partition] += u.Weight
+
+		for _, dep := range u.Deps {
+			r.dependees[dep] = append(r.dependees[dep], u.ID)
+		}
+
+		if _, ok := r.candidates[u.Partition]; !ok {
+			r.candidates[u.Partition] = make(map[UserID]bool)
+		}
+		r.candidates[u.Partition][u.ID] = true
 	}
 }
 
 func (r *Runner) Users(partition Partition) []UserID {
-	return slices.Clone(r.usersByPartition[partition])
+	return slices.Clone(r.usersInPartition[partition])
 }
 
-func (r *Runner) User(id UserID) *User {
+func (r *Runner) User(id UserID) User {
 	return r.userByID[id]
 }
 
 func (r *Runner) IsRefused(id UserID) bool {
 	u := r.User(id)
-	refusals, ok := r.refusals[u.Partition]
-	if !ok {
-		return false
+	cand, ok := r.candidates[u.Partition][id]
+	if ok {
+		return !cand
 	}
-	_, refused := refusals[id]
-	return refused
+	return true
 }
 
 // Mark user as refused without propagating the refusal.
 func (r *Runner) shallowRefuse(id UserID) {
 	u := r.User(id)
-	_, ok := r.refusals[u.Partition]
-	if !ok {
-		r.refusals[u.Partition] = make(map[UserID]bool)
-	}
-	r.refusals[u.Partition][id] = true
-}
-
-func (r *Runner) prepare() {
-	r.refusals = make(map[Partition]map[UserID]bool)
-	r.dependees = make(map[UserID][]UserID)
-
-	for _, user := range r.userByID {
-		for _, dep := range user.Deps {
-			r.dependees[dep] = append(r.dependees[dep], user.ID)
-		}
-	}
+	delete(r.candidates[u.Partition], u.ID)
+	r.candidateWeights[u.Partition] -= u.Weight
 }
 
 // refused refuses the user with the given id, and all users that depend on it.
@@ -120,31 +138,16 @@ func (r *Runner) refuse(id UserID) bool {
 }
 
 func (r *Runner) Run(availabilities []Availability) (*Solution, error) {
-	r.prepare()
+	r.reset()
 
 	availabilitiesByPartition := make(map[Partition]Availability)
 	for _, a := range availabilities {
 		availabilitiesByPartition[a.Partition] = a
 	}
 
-	// We shuffle the users for every pass type
-	// The users will be in the order of their refusal, meaning users
-	// in the beginning will be refused, while users toward the end will not.
 	partitionNeedsRefusals := make(map[Partition]bool)
-	for partName, partUsers := range r.usersByPartition {
+	for partName := range r.usersInPartition {
 		partitionNeedsRefusals[partName] = true
-		WeightedShuffle(r.rand, func(id UserID) float64 {
-			w := r.User(id).Weight
-			if w == 0 {
-				return 1
-			}
-			return w
-		}, partUsers)
-	}
-
-	refusalIdx := make(map[Partition]int)
-	for partName, _ := range partitionNeedsRefusals {
-		refusalIdx[partName] = 0
 	}
 
 	madeProgress := true
@@ -158,28 +161,36 @@ func (r *Runner) Run(availabilities []Availability) (*Solution, error) {
 			}
 
 			av := availabilitiesByPartition[partName]
-			partUsers := r.usersByPartition[partName]
+			partUsers := r.usersInPartition[partName]
 
 			// Check if this partition is still open.
 			// We need to check here, because other partitions might
 			// have refused enough users here to close it.
 			// Users that are not refused get a pass.
-			if av.Available >= len(partUsers)-len(r.refusals[partName]) {
+			if av.Available >= len(r.candidates[partName]) {
 				// We refused enough users
 				partitionNeedsRefusals[partName] = false
 				continue
 			}
 
-			for idx := refusalIdx[partName]; idx < len(partUsers); idx++ {
-				if !r.refuse(partUsers[idx]) {
-					// Cannot refuse users as they are refused already.
+			// Find next refusal
+			refusalVal := r.rand.Float64() * r.candidateWeights[partName]
+			// Find the refused user
+			localWeightSum := 0.0
+			for u := range r.candidates[partName] {
+				localWeightSum += r.User(u).Weight
+				if localWeightSum < refusalVal {
 					continue
 				}
 
-				// Made new refusals
-				madeProgress = true
-				refusalIdx[partName] = idx + 1
-				continue PartitionLoop
+				// u is the user to be refused!
+				// Swap the current user to the end of the pool and then shrink the pool.
+				if r.refuse(u) {
+					// Only if the current user is not already refused we continue.
+					// Other
+					madeProgress = true
+					continue PartitionLoop
+				}
 			}
 
 			// Did not break; so we run out of users to refuse.
@@ -189,15 +200,9 @@ func (r *Runner) Run(availabilities []Availability) (*Solution, error) {
 	}
 
 	passes := make(map[Partition][]UserID)
-	for uID, user := range r.userByID {
-		if !r.IsRefused(uID) {
-			passes[user.Partition] = append(passes[user.Partition], uID)
-		}
+	for partName, cand := range r.candidates {
+		passes[partName] = slices.Sorted(maps.Keys(cand))
 	}
-	for _, partPasses := range passes {
-		slices.Sort(partPasses)
-	}
-
 	return &Solution{
 		Passes: passes,
 	}, nil
@@ -232,24 +237,4 @@ func UsersFromStrings(lines []string) ([]*User, error) {
 		users = append(users, u)
 	}
 	return users, nil
-}
-
-func WeightedShuffle[T comparable](rand *rand.Rand, getWeight func(T) float64, els []T) {
-	weights := make(map[T]float64)
-	for _, el := range els {
-		w := getWeight(el)
-		if w < 0 {
-			w = 0
-		}
-		weights[el] = rand.Float64() * getWeight(el)
-	}
-	slices.SortStableFunc(els, func(a, b T) int {
-		if weights[a] < weights[b] {
-			return -1
-		} else if weights[a] == weights[b] {
-			return 0
-		} else {
-			return 1
-		}
-	})
 }
