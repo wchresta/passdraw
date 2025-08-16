@@ -18,6 +18,12 @@ type User struct {
 	ID        UserID
 	Partition Partition
 	Deps      []UserID
+
+	// Weight can change how likely it is for a user to get a pass.
+	// A number below 1 reduces changes to get a pass, number above 1 increase them.
+	// If 0; defaults to 1.
+	// Set to a number below 0 to guarantee a refusal.
+	Weight float64
 }
 
 type Availability struct {
@@ -127,9 +133,13 @@ func (r *Runner) Run(availabilities []Availability) (*Solution, error) {
 	partitionNeedsRefusals := make(map[Partition]bool)
 	for partName, partUsers := range r.usersByPartition {
 		partitionNeedsRefusals[partName] = true
-		r.rand.Shuffle(len(partUsers), func(i, j int) {
-			partUsers[i], partUsers[j] = partUsers[j], partUsers[i]
-		})
+		WeightedShuffle(r.rand, func(id UserID) float64 {
+			w := r.User(id).Weight
+			if w == 0 {
+				return 1
+			}
+			return w
+		}, partUsers)
 	}
 
 	refusalIdx := make(map[Partition]int)
@@ -222,4 +232,24 @@ func UsersFromStrings(lines []string) ([]*User, error) {
 		users = append(users, u)
 	}
 	return users, nil
+}
+
+func WeightedShuffle[T comparable](rand *rand.Rand, getWeight func(T) float64, els []T) {
+	weights := make(map[T]float64)
+	for _, el := range els {
+		w := getWeight(el)
+		if w < 0 {
+			w = 0
+		}
+		weights[el] = rand.Float64() * getWeight(el)
+	}
+	slices.SortStableFunc(els, func(a, b T) int {
+		if weights[a] < weights[b] {
+			return -1
+		} else if weights[a] == weights[b] {
+			return 0
+		} else {
+			return 1
+		}
+	})
 }

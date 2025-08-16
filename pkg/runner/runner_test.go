@@ -128,6 +128,39 @@ func TestRun_IndependentPartitions(t *testing.T) {
 	}
 }
 
+// We run all above tests at the same time.
+func TestRun_Weights(t *testing.T) {
+	rand := rand.New(rand.NewSource(5544332211))
+
+	// Add free users with weight 1
+	var users []*runner.User
+	users = append(users, mkFreeUsers("Test", "Free", 8)...)
+	// Add one user with weight 2
+	users = append(users, &runner.User{
+		Partition: "Test",
+		ID:        "Weighted",
+		Weight:    2.0,
+	})
+
+	r := runner.NewWithRand(users, rand)
+
+	availability := []runner.Availability{{Partition: "Test", Available: 3}}
+
+	allowDelta := 0.02 // Allow 2% difference from expected outcome
+	for _, partProbs := range runStats(t, r, availability, 10000) {
+		for uid, prob := range partProbs {
+			want := 3. / 10
+			if uid == "Weighted" {
+				want = 6. / 10
+			}
+
+			if diff := math.Abs(prob - want); diff > allowDelta {
+				t.Errorf("Run produced unexpected probabilities: user=%s got %f, want %f, diff: %f", uid, prob, want, diff)
+			}
+		}
+	}
+}
+
 func runStats(t *testing.T, r *runner.Runner, availabilities []runner.Availability, runCount int) map[runner.Partition]map[runner.UserID]float64 {
 	passes := make(map[runner.Partition]map[runner.UserID]int)
 	for i := 0; i < runCount; i++ {
